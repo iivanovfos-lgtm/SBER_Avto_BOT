@@ -5,6 +5,7 @@ import ta
 import time
 import asyncio
 import csv
+import uuid
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import pytz
@@ -17,6 +18,7 @@ LOT_SIZE = 1  # 1 лот = 10 акций Сбербанка
 current_position = None
 entry_price = None
 
+# ===== Получение цены =====
 def get_price():
     try:
         with Client(TINKOFF_TOKEN) as client:
@@ -35,6 +37,7 @@ def get_price():
         print(f"[Ошибка цены] {e}")
         return None
 
+# ===== Генерация сигнала =====
 def generate_signal(prices):
     df = pd.DataFrame(prices, columns=["close"])
     df["ema_fast"] = ta.trend.ema_indicator(df["close"], window=5)
@@ -48,6 +51,7 @@ def generate_signal(prices):
             return "SELL", df
     return "HOLD", df
 
+# ===== Рыночный ордер =====
 def place_market_order(direction):
     with Client(TINKOFF_TOKEN) as client:
         dir_enum = OrderDirection.ORDER_DIRECTION_BUY if direction == "BUY" else OrderDirection.ORDER_DIRECTION_SELL
@@ -57,9 +61,10 @@ def place_market_order(direction):
             direction=dir_enum,
             account_id=ACCOUNT_ID,
             order_type=OrderType.ORDER_TYPE_MARKET,
-            order_id=f"bot-order-{datetime.now().timestamp()}"
+            order_id=str(uuid.uuid4())  # уникальный UUID
         )
 
+# ===== Стоп-ордера =====
 def place_stop_orders(entry_price, direction):
     with Client(TINKOFF_TOKEN) as client:
         if direction == "BUY":
@@ -71,7 +76,7 @@ def place_stop_orders(entry_price, direction):
             tp_price = entry_price * (1 - TAKE_PROFIT_PCT / 100)
             stop_dir = StopOrderDirection.STOP_ORDER_DIRECTION_BUY
 
-        # SL
+        # Stop Loss
         client.stop_orders.post_stop_order(
             figi=TINKOFF_FIGI,
             quantity=LOT_SIZE,
@@ -83,7 +88,7 @@ def place_stop_orders(entry_price, direction):
             stop_order_type=StopOrderType.STOP_ORDER_TYPE_STOP_LIMIT
         )
 
-        # TP
+        # Take Profit
         client.stop_orders.post_stop_order(
             figi=TINKOFF_FIGI,
             quantity=LOT_SIZE,
@@ -95,11 +100,13 @@ def place_stop_orders(entry_price, direction):
             stop_order_type=StopOrderType.STOP_ORDER_TYPE_TAKE_PROFIT
         )
 
+# ===== Журнал =====
 def log_trade(action, price, profit=None):
     with open("trades_sber.csv", "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow([datetime.now(moscow_tz).strftime("%Y-%m-%d %H:%M:%S"), action, price, profit])
 
+# ===== График =====
 def plot_chart(df, signal, price):
     os.makedirs("charts_sber", exist_ok=True)
     plt.figure(figsize=(8, 4))
@@ -116,6 +123,7 @@ def plot_chart(df, signal, price):
     plt.savefig("charts_sber/chart.png")
     plt.close()
 
+# ===== Telegram =====
 async def send_chart(signal, price):
     bot = Bot(token=TELEGRAM_TOKEN)
     photo = FSInputFile("charts_sber/chart.png")
@@ -127,6 +135,7 @@ async def send_message(text):
     await bot.send_message(CHAT_ID, text)
     await bot.session.close()
 
+# ===== Основной цикл =====
 def main():
     global current_position, entry_price
     prices = []
@@ -156,7 +165,10 @@ def main():
             log_trade(f"OPEN {signal}", price)
             asyncio.run(send_message(f"🟢 Открыта {signal} @ {price:.2f}"))
             place_stop_orders(entry_price, signal)
-            asyncio.run(send_message(f"📌 SL: {entry_price * (1 - STOP_LOSS_PCT / 100 if signal == 'BUY' else 1 + STOP_LOSS_PCT / 100):.2f}\n📌 TP: {entry_price * (1 + TAKE_PROFIT_PCT / 100 if signal == 'BUY' else 1 - TAKE_PROFIT_PCT / 100):.2f}"))
+            asyncio.run(send_message(
+                f"📌 SL: {entry_price * (1 - STOP_LOSS_PCT / 100 if signal == 'BUY' else 1 + STOP_LOSS_PCT / 100):.2f}\n"
+                f"📌 TP: {entry_price * (1 + TAKE_PROFIT_PCT / 100 if signal == 'BUY' else 1 - TAKE_PROFIT_PCT / 100):.2f}"
+            ))
 
         time.sleep(60)
 
