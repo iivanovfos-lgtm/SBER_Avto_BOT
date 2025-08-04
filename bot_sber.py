@@ -61,7 +61,7 @@ def place_market_order(direction):
             direction=dir_enum,
             account_id=ACCOUNT_ID,
             order_type=OrderType.ORDER_TYPE_MARKET,
-            order_id=str(uuid.uuid4())  # уникальный UUID
+            order_id=str(uuid.uuid4())
         )
 
 # ===== Стоп-ордера =====
@@ -100,7 +100,7 @@ def place_stop_orders(entry_price, direction):
             stop_order_type=StopOrderType.STOP_ORDER_TYPE_TAKE_PROFIT
         )
 
-# ===== Журнал =====
+# ===== Логирование =====
 def log_trade(action, price, profit=None):
     with open("trades_sber.csv", "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -127,12 +127,12 @@ def plot_chart(df, signal, price):
 async def send_chart(signal, price):
     bot = Bot(token=TELEGRAM_TOKEN)
     photo = FSInputFile("charts_sber/chart.png")
-    await bot.send_photo(CHAT_ID, photo, caption=f"{signal} @ {price:.2f}")
+    await bot.send_photo(CHAT_ID, photo, caption=f"[Сбербанк] {signal} @ {price:.2f}")
     await bot.session.close()
 
 async def send_message(text):
     bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(CHAT_ID, text)
+    await bot.send_message(CHAT_ID, f"[Сбербанк] {text}")
     await bot.session.close()
 
 # ===== Основной цикл =====
