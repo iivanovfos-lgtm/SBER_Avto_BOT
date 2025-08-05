@@ -1,7 +1,4 @@
-import sys, os
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from config import *
+import os
 import pandas as pd
 import ta
 import time
@@ -12,14 +9,19 @@ import pytz
 from aiogram import Bot
 from tinkoff.invest import Client, OrderDirection, OrderType, CandleInterval
 
-# === Настройки ===
+# === Читаем переменные из окружения Render ===
+TINKOFF_TOKEN = os.getenv("TINKOFF_TOKEN")
+ACCOUNT_ID = os.getenv("ACCOUNT_ID")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+TINKOFF_FIGI = os.getenv("TINKOFF_FIGI", "BBG004730N88")  # FIGI Сбербанк по умолчанию
+
 TRADE_LOTS = int(os.getenv("TRADE_LOTS", 1))  # Лоты на сделку
 TRADE_RUB_LIMIT = float(os.getenv("TRADE_RUB_LIMIT", 10000))
 LOT_SIZE_SBER = 10  # 1 лот = 10 акций
-TP_PERCENT = 0.5    # Take Profit % для Сбер
-SL_PERCENT = 0.3    # Stop Loss %
-BROKER_FEE = 0.003  # 0.3% комиссия
-MIN_POSITION_THRESHOLD = 0.5
+TP_PERCENT = float(os.getenv("TP_PERCENT", 0.5))  # Take Profit %
+SL_PERCENT = float(os.getenv("SL_PERCENT", 0.3))  # Stop Loss %
+BROKER_FEE = float(os.getenv("BROKER_FEE", 0.003))  # 0.3% комиссия
 
 moscow_tz = pytz.timezone("Europe/Moscow")
 
@@ -28,7 +30,7 @@ entry_price = None
 take_profit_price = None
 stop_loss_price = None
 
-# ===== Балансы =====
+# ===== Получаем баланс =====
 def get_balances():
     rub_balance = 0
     sber_balance = 0
@@ -186,7 +188,7 @@ def main():
                 current_position = "BUY"
                 entry_price = price
 
-                # === Цена входа с учётом комиссии (покупка + продажа) ===
+                # Цена входа с учётом комиссии (покупка + продажа)
                 total_fee = BROKER_FEE * 2
                 entry_price_with_fee = entry_price * (1 + total_fee)
 
