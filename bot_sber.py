@@ -1,5 +1,4 @@
 import sys, os
-# Добавляем в путь папку, где лежит этот файл, чтобы найти config.py
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import *
@@ -15,32 +14,37 @@ from aiogram import Bot
 from aiogram.types import FSInputFile
 from tinkoff.invest import Client, OrderDirection, OrderType, CandleInterval
 
-# === Настройки торговли из Environment Variables ===
-TRADE_LOTS = int(os.getenv("TRADE_LOTS", 1))
+TRADE_LOTS = int(os.getenv("TRADE_LOTS", 1))  # Лоты на сделку
 TRADE_RUB_LIMIT = float(os.getenv("TRADE_RUB_LIMIT", 10000))
-MIN_POSITION_THRESHOLD = 0.5  # Минимум акций, чтобы считать позицию открытой
+MIN_POSITION_THRESHOLD = 0.5
+LOT_SIZE_SBER = 10  # 1 лот Сбера = 10 акций
 
 moscow_tz = pytz.timezone("Europe/Moscow")
 current_position = None
 entry_price = None
 
-def get_account_balance():
-    """Баланс в рублях."""
+def get_balances():
+    rub_balance = 0
+    sber_balance = 0
     with Client(TINKOFF_TOKEN) as client:
-        portfolio = client.operations.get_portfolio(account_id=ACCOUNT_ID)
-        for pos in portfolio.positions:
-            if pos.instrument_type == "currency" and pos.figi == "FG0000000000":
-                return float(pos.quantity.units)
-    return 0
-
-def get_current_position():
-    """Количество акций Сбербанка в портфеле."""
-    with Client(TINKOFF_TOKEN) as client:
-        portfolio = client.operations.get_portfolio(account_id=ACCOUNT_ID)
-        for pos in portfolio.positions:
+        positions = client.operations.get_positions(account_id=ACCOUNT_ID)
+        for cur in positions.money:
+            if cur.currency == "rub":
+                rub_balance = float(cur.units)
+        for pos in positions.securities:
             if pos.figi == TINKOFF_FIGI:
-                return float(pos.quantity.units)
-    return 0
+                sber_balance = float(pos.balance)
+    return rub_balance, sber_balance
+
+async def send_debug_message(text):
+    bot = Bot(token=TELEGRAM_TOKEN)
+    await bot.send_message(CHAT_ID, f"🛠 DEBUG:\n{text}")
+    await bot.session.close()
+
+async def notify_order_rejected(reason):
+    bot = Bot(token=TELEGRAM_TOKEN)
+    await bot.send_message(CHAT_ID, f"[Сбербанк] ⚠️ Ордер отклонён!\nПричина: {reason}")
+    await bot.session.close()
 
 def load_initial_prices():
     try:
@@ -89,59 +93,42 @@ def generate_signal(prices):
             return "SELL", df, "нисходящий тренд", ema5, ema20, rsi
     return "HOLD", df, "нет тренда", ema5, ema20, rsi
 
-def plot_chart(df, signal, price):
-    if len(df) < 20:
-        return
-    os.makedirs("charts_sber", exist_ok=True)
-    plt.figure(figsize=(8, 4))
-    plt.plot(df["close"], label="Цена", color="black")
-    plt.plot(df["ema_fast"], label="EMA(5)", color="blue")
-    plt.plot(df["ema_slow"], label="EMA(20)", color="red")
-    if signal == "BUY":
-        plt.scatter(len(df) - 1, price, color="green")
-    elif signal == "SELL":
-        plt.scatter(len(df) - 1, price, color="red")
-    plt.legend()
-    plt.grid(True, linestyle="--", alpha=0.5)
-    plt.tight_layout()
-    plt.savefig("charts_sber/chart.png")
-    plt.close()
-
-async def send_chart(signal, price, reason, ema5, ema20, rsi):
-    bot = Bot(token=TELEGRAM_TOKEN)
-    if os.path.exists("charts_sber/chart.png"):
-        photo = FSInputFile("charts_sber/chart.png")
-        await bot.send_photo(
-            CHAT_ID, photo,
-            caption=f"[Сбербанк] {signal} @ {price:.2f}\nПричина: {reason}\nEMA5: {ema5:.2f} | EMA20: {ema20:.2f} | RSI: {rsi:.2f}"
-        )
-    else:
-        await bot.send_message(CHAT_ID, f"[Сбербанк] {signal} @ {price:.2f}")
-    await bot.session.close()
-
-async def notify_order_rejected(reason):
-    bot = Bot(token=TELEGRAM_TOKEN)
-    await bot.send_message(CHAT_ID, f"[Сбербанк] ⚠️ Ордер отклонён!\nПричина: {reason}")
-    await bot.session.close()
-
 def place_market_order(direction, current_price):
-    current_balance = get_current_position()
-    rub_balance = get_account_balance()
-    trade_amount_rub = current_price * TRADE_LOTS
+    rub_balance, sber_balance = get_balances()
+
+    sber_lots = int(sber_balance // LOT_SIZE_SBER)
+    buy_shares_qty = TRADE_LOTS * LOT_SIZE_SBER
+    trade_amount_rub = current_price * buy_shares_qty
+
+    debug_text = (
+        f"Направление: {direction}\n"
+        f"RUB баланс: {rub_balance:.2f}\n"
+        f"Сбер баланс: {sber_balance:.2f} ({sber_lots} лотов)\n"
+        f"Лоты на сделку: {TRADE_LOTS}\n"
+        f"Акций на покупку: {buy_shares_qty}\n"
+        f"Стоимость сделки: {trade_amount_rub:.2f} RUB\n"
+        f"Лимит сделки: {TRADE_RUB_LIMIT:.2f} RUB"
+    )
+    print(debug_text)
+    asyncio.run(send_debug_message(debug_text))
 
     if direction == "BUY":
-        if current_balance > MIN_POSITION_THRESHOLD:
+        if sber_balance >= LOT_SIZE_SBER:  # Уже есть хотя бы 1 лот
             return None
         if trade_amount_rub > TRADE_RUB_LIMIT or trade_amount_rub > rub_balance:
             return None
         order_dir = OrderDirection.ORDER_DIRECTION_BUY
-        qty = TRADE_LOTS
+        qty = buy_shares_qty
 
     elif direction == "SELL":
-        if current_balance <= MIN_POSITION_THRESHOLD:
+        if sber_balance < LOT_SIZE_SBER:
+            print(f"[INFO] Недостаточно акций для продажи ({sber_balance}), минимум {LOT_SIZE_SBER}")
+            return None
+        qty = min(sber_lots, TRADE_LOTS) * LOT_SIZE_SBER
+        if qty < LOT_SIZE_SBER:
             return None
         order_dir = OrderDirection.ORDER_DIRECTION_SELL
-        qty = int(current_balance)
+
     else:
         return None
 
@@ -179,10 +166,9 @@ def main():
             prices = prices[-60:]
 
         signal, df, reason, ema5, ema20, rsi = generate_signal(prices)
-        plot_chart(df, signal, price)
 
         if first_run:
-            asyncio.run(send_chart(f"🚀 Стартовый сигнал {signal}", price, reason, ema5, ema20, rsi))
+            asyncio.run(send_debug_message(f"🚀 Стартовый сигнал {signal} @ {price:.2f}"))
             first_run = False
 
         if signal in ["BUY", "SELL"] and signal != current_position:
@@ -190,7 +176,7 @@ def main():
             if resp:
                 current_position = signal if signal == "BUY" else None
                 entry_price = price
-                asyncio.run(send_chart(f"🟢 Открыта {signal}", price, reason, ema5, ema20, rsi))
+                asyncio.run(send_debug_message(f"🟢 Открыта {signal} @ {price:.2f}"))
 
         time.sleep(60)
 
